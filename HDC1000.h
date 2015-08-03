@@ -16,7 +16,7 @@
 
 // modified by Hagen Kaye, 2015, to work with Particle Photon
 
-#include "Wire.h"
+#include "application.h"
 
 #define HDC1000_I2CADDR       0x40
 #define HDC1000_TEMP          0x00
