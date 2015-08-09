@@ -20,25 +20,41 @@ char status[256] = "";
 char IPADDRESS[] = "api.thingspeak.com";
 char URL[] = "/update";
 
+SYSTEM_MODE(MANUAL);
+
 void setup()
 {
+  // turn off main led to save power
+  RGB.control(true);
+  RGB.color(0,0,0);
+
+  // get solar and battery voltage
+  solarVoltage = analogRead(A1);
+  batteryVoltage = analogRead(A0);
+
+  // early exit - battery voltage is too LOW
+  if (batteryVoltage < 2180)
+  {
+    // if at night time wait 20 minutes before trying again
+    if (solarVoltage < 2250)
+    {
+      System.sleep(SLEEP_MODE_DEEP, 60*20);
+    }
+    else
+    {
+      // solar power is working, wait 5 minutes, let it charge the battery
+      System.sleep(SLEEP_MODE_DEEP, 60*5);
+    }
+  }
+
+  // battery voltage is good, boot system
   pinMode(D7, OUTPUT);
+  digitalWrite(D7, HIGH);
 
-  Spark.publish("Weather Station", "boot");
-
-  delay(2000);
-  if (uvIndex.begin())
-  {
-    Spark.publish("Sensor", "SI1145");
-  }
-  if (tempSensor.begin())
-  {
-    Spark.publish("Sensor", "HDC1000");
-  }
+  delay(500);
+  uvIndex.begin();
+  tempSensor.begin();
 }
-
-int lastSecond = -1;
-int lastMinute = -1;
 
 char message[80];
 
@@ -54,50 +70,79 @@ http_header_t headers[] = {
     { NULL, NULL } // NOTE: Always terminate headers with NULL
 };
 
+int dataReady = 0;
+int connectionStarted = 0;
+int transmitData = 0;
+
 void loop()
 {
-  // items that get processed one a second
-  if (lastSecond != Time.second())
+  // read data from sensors
+  if (dataReady == 0)
   {
-    lastSecond = Time.second();
-    if (lastSecond & 1)
-    {
-      digitalWrite(D7, LOW);
-    }
-    else
-    {
-      digitalWrite(D7, HIGH);
-    }
-  }
-  // items that get processed once a minute
-  if (lastMinute != Time.minute())
-  {
-    if (Spark.connected() == false)
-      System.reset();
-      
-    lastMinute = Time.minute();
     temperature = tempSensor.readTemperature();
     humidity = tempSensor.readHumidity();
     uv = uvIndex.readUV();
     ir = uvIndex.readIR();
     visible = uvIndex.readVisible();
-    int solar = analogRead(A1);
-    int battery = analogRead(A0);
-
-    sprintf(message, "%dC %d%% uv:%d ir:%d v:%d v1:%d v2:%d", (int)temperature, (int)humidity, uv, ir, visible, solar, battery);
-    Spark.publish("data", message);
-
-    request.hostname = IPADDRESS;
-    request.port = 80;
-    request.path = URL;
-
-    request.body =  "field1=" + String((int)temperature, DEC)
-                     + "&" + "field2=" + String((int)humidity, DEC) // Do not omit
-                     + "&" + "field3=" + String(uv, DEC) // the &
-                     + "&" + "field4=" + String(ir, DEC)
-                     + "&" + "field5=" + String(visible, DEC)
-                     + "&" + "field6=" + String(solar, DEC)
-                     + "&" + "field7=" + String(battery, DEC);
-    http.post(request, response, headers);
+    dataReady = 1;
   }
+
+  // start up Internet connection
+  if (connectionStarted == 0)
+  {
+    RGB.control(false);
+    digitalWrite(D7, LOW);
+    Spark.connect();
+    connectionStarted = 1;
+  }
+
+  if (Spark.connected())
+  {
+    // process any background tasks for wifi
+    Spark.process();
+
+    if (transmitData == 0)
+    {
+      transmitData = 1;
+      request.hostname = IPADDRESS;
+      request.port = 80;
+      request.path = URL;
+
+      request.body =  "field1=" + String((int)temperature, DEC)
+                       + "&" + "field2=" + String((int)humidity, DEC) // Do not omit
+                       + "&" + "field3=" + String(uv, DEC) // the &
+                       + "&" + "field4=" + String(ir, DEC)
+                       + "&" + "field5=" + String(visible, DEC)
+                       + "&" + "field6=" + String(solarVoltage, DEC)
+                       + "&" + "field7=" + String(batteryVoltage, DEC);
+      http.post(request, response, headers);
+    }
+  }
+
+  // stay on for only 30 seconds maximum
+  if (millis() > 30000)
+  {
+    // did not connect to the Internet
+    if (Spark.connected() == false)
+    {
+      if (batteryVoltage > 2250 && solarVoltage > 2400)
+      {
+        // strong battery and solar voltage - power back on in 60 seconds
+        System.sleep(SLEEP_MODE_DEEP, 60);
+        goto exit;
+      }
+      // else fall thru and test for day/night
+    }
+
+    // connection successul - come back in 5 minutes during daytime, 10 minutes at night
+    if (solarVoltage < 1000)
+    {
+      System.sleep(SLEEP_MODE_DEEP, 10*60);
+    }
+    else
+    {
+      System.sleep(SLEEP_MODE_DEEP, 5*60);
+    }
+  }
+  exit:;
 }
