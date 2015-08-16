@@ -12,6 +12,16 @@ int ir;
 int visible;
 int solarVoltage;
 int batteryVoltage;
+bool daytime;
+
+typedef enum {
+  STATE_PROGRAM = 0,
+  STATE_BOOT,
+  STATE_WIFI_CONNECTING,
+  STATE_WIFI_COMPLETE
+} machine_state;
+
+machine_state currentState;
 
 extern char APIKEY[];
 // uncomment and put your thingspeak api here
@@ -24,7 +34,21 @@ SYSTEM_MODE(MANUAL);
 
 void setup()
 {
-  // turn off main led to save power
+  pinMode(D4, INPUT_PULLUP);
+  currentState = STATE_BOOT;
+
+  // test if input at D4 is LOW, enter program mode if so
+  // turn on LED, and start connection process
+  if (digitalRead(D4) == LOW)
+  {
+    currentState = STATE_PROGRAM;
+    pinMode(D7, OUTPUT);
+    digitalWrite(D7, HIGH);
+    Spark.connect();
+    return;
+  }
+
+  // turn off main led to save power, also use our own LED colors for states
   RGB.control(true);
   RGB.color(0,0,0);
 
@@ -33,7 +57,7 @@ void setup()
   batteryVoltage = analogRead(A0);
 
   // early exit - battery voltage is too LOW
-  if (batteryVoltage < 2180)
+  if (batteryVoltage < 2200)
   {
     // if at night time wait 20 minutes before trying again
     if (solarVoltage < 2250)
@@ -47,11 +71,11 @@ void setup()
     }
   }
 
-  // battery voltage is good, boot system
-  pinMode(D7, OUTPUT);
-  digitalWrite(D7, HIGH);
+  daytime = true;
+  if (solarVoltage < 1000)
+    daytime = false;
 
-  delay(500);
+  delay(100);
   uvIndex.begin();
   tempSensor.begin();
 }
@@ -70,79 +94,71 @@ http_header_t headers[] = {
     { NULL, NULL } // NOTE: Always terminate headers with NULL
 };
 
-int dataReady = 0;
-int connectionStarted = 0;
-int transmitData = 0;
-
 void loop()
 {
-  // read data from sensors
-  if (dataReady == 0)
+  switch (currentState)
   {
-    temperature = tempSensor.readTemperature();
-    humidity = tempSensor.readHumidity();
-    uv = uvIndex.readUV();
-    ir = uvIndex.readIR();
-    visible = uvIndex.readVisible();
-    dataReady = 1;
+    case STATE_PROGRAM:
+      if (Spark.connected())
+      {
+        Spark.process();
+      }
+      return;
+    case STATE_BOOT:
+      RGB.color(0,0,255);
+      // boot - read data from sensors
+      temperature = tempSensor.readTemperature();
+      humidity = tempSensor.readHumidity();
+      uv = uvIndex.readUV();
+      ir = uvIndex.readIR();
+      visible = uvIndex.readVisible();
+      WiFi.connect();
+      currentState = STATE_WIFI_CONNECTING;
+      break;
+    case STATE_WIFI_CONNECTING:
+      Spark.process();
+      RGB.color(255,0,0);
+      if (WiFi.ready())
+      {
+        RGB.color(0,255,0);
+        request.hostname = IPADDRESS;
+        request.port = 80;
+        request.path = URL;
+
+        float solar = (float)solarVoltage / 2048.0 * 3.3;
+        float battery = (float)batteryVoltage / 2048.0 * 3.3;
+
+        request.body =  "field1=" + String((int)temperature, DEC)
+                         + "&" + "field2=" + String((int)humidity, DEC) // Do not omit
+                         + "&" + "field3=" + String(uv, DEC) // the &
+                         + "&" + "field4=" + String(ir, DEC)
+                         + "&" + "field5=" + String(visible, DEC)
+                         + "&" + "field6=" + String(solar, 2)
+                         + "&" + "field7=" + String(battery, 2);
+        http.post(request, response, headers);
+        currentState = STATE_WIFI_COMPLETE;
+      }
+      break;
   }
 
-  // start up Internet connection
-  if (connectionStarted == 0)
+  // stay on for only 30 seconds maximum or if data has been transmitted
+  if (millis() > 30000 || currentState == STATE_WIFI_COMPLETE)
   {
-    RGB.control(false);
-    digitalWrite(D7, LOW);
-    Spark.connect();
-    connectionStarted = 1;
-  }
+    // default - reconnect in 10 minutes
+    int reconnectIn = 10;
+    if (daytime == false)
+      reconnectIn = 15;
 
-  if (Spark.connected())
-  {
-    // process any background tasks for wifi
-    Spark.process();
-
-    if (transmitData == 0)
-    {
-      transmitData = 1;
-      request.hostname = IPADDRESS;
-      request.port = 80;
-      request.path = URL;
-
-      request.body =  "field1=" + String((int)temperature, DEC)
-                       + "&" + "field2=" + String((int)humidity, DEC) // Do not omit
-                       + "&" + "field3=" + String(uv, DEC) // the &
-                       + "&" + "field4=" + String(ir, DEC)
-                       + "&" + "field5=" + String(visible, DEC)
-                       + "&" + "field6=" + String(solarVoltage, DEC)
-                       + "&" + "field7=" + String(batteryVoltage, DEC);
-      http.post(request, response, headers);
-    }
-  }
-
-  // stay on for only 30 seconds maximum
-  if (millis() > 30000)
-  {
     // did not connect to the Internet
-    if (Spark.connected() == false)
+    if (!WiFi.ready())
     {
       if (batteryVoltage > 2250 && solarVoltage > 2400)
       {
-        // strong battery and solar voltage - power back on in 60 seconds
-        System.sleep(SLEEP_MODE_DEEP, 60);
-        goto exit;
+        // strong battery and solar voltage - power back on in 3 minutes
+        reconnectIn = 3;
       }
       // else fall thru and test for day/night
     }
-
-    // connection successul - come back in 5 minutes during daytime, 10 minutes at night
-    if (solarVoltage < 1000)
-    {
-      System.sleep(SLEEP_MODE_DEEP, 10*60);
-    }
-    else
-    {
-      System.sleep(SLEEP_MODE_DEEP, 5*60);
-    }
+    System.sleep(SLEEP_MODE_DEEP, reconnectIn*60);
   }
-  exit:;
 }
