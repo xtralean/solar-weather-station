@@ -10,8 +10,8 @@ float humidity;
 int uv;
 int ir;
 int visible;
-int solarVoltage;
-int batteryVoltage;
+float solarVoltage;
+float batteryVoltage;
 bool daytime;
 
 typedef enum {
@@ -53,14 +53,14 @@ void setup()
   RGB.color(0,0,0);
 
   // get solar and battery voltage
-  solarVoltage = analogRead(A1);
-  batteryVoltage = analogRead(A0);
+  solarVoltage = (float)analogRead(A1) / 2048.0 * 3.3;
+  batteryVoltage = (float)analogRead(A0) / 2048.0 * 3.3;
 
   // early exit - battery voltage is too LOW
-  if (batteryVoltage < 2200)
+  if (batteryVoltage < 3.55)
   {
-    // if at night time wait 20 minutes before trying again
-    if (solarVoltage < 2250)
+    // if solar voltage not sufficient to charge battery wait 20 minutes
+    if (solarVoltage < 3.72)
     {
       System.sleep(SLEEP_MODE_DEEP, 60*20);
     }
@@ -72,7 +72,7 @@ void setup()
   }
 
   daytime = true;
-  if (solarVoltage < 1000)
+  if (solarVoltage < 3.0)
     daytime = false;
 
   delay(100);
@@ -125,16 +125,13 @@ void loop()
         request.port = 80;
         request.path = URL;
 
-        float solar = (float)solarVoltage / 2048.0 * 3.3;
-        float battery = (float)batteryVoltage / 2048.0 * 3.3;
-
         request.body =  "field1=" + String((int)temperature, DEC)
                          + "&" + "field2=" + String((int)humidity, DEC) // Do not omit
                          + "&" + "field3=" + String(uv, DEC) // the &
                          + "&" + "field4=" + String(ir, DEC)
                          + "&" + "field5=" + String(visible, DEC)
-                         + "&" + "field6=" + String(solar, 2)
-                         + "&" + "field7=" + String(battery, 2);
+                         + "&" + "field6=" + String(solarVoltage, 2)
+                         + "&" + "field7=" + String(batteryVoltage, 2);
         http.post(request, response, headers);
         currentState = STATE_WIFI_COMPLETE;
       }
@@ -149,16 +146,6 @@ void loop()
     if (daytime == false)
       reconnectIn = 15;
 
-    // did not connect to the Internet
-    if (!WiFi.ready())
-    {
-      if (batteryVoltage > 2250 && solarVoltage > 2400)
-      {
-        // strong battery and solar voltage - power back on in 3 minutes
-        reconnectIn = 3;
-      }
-      // else fall thru and test for day/night
-    }
     System.sleep(SLEEP_MODE_DEEP, reconnectIn*60);
   }
 }
