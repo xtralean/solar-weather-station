@@ -105,7 +105,7 @@ void loop()
       }
       return;
     case STATE_BOOT:
-      RGB.color(0,0,255);
+      RGB.color(0,0,64);
       // boot - read data from sensors
       temperature = tempSensor.readTemperature();
       humidity = tempSensor.readHumidity();
@@ -117,10 +117,10 @@ void loop()
       break;
     case STATE_WIFI_CONNECTING:
       Spark.process();
-      RGB.color(255,0,0);
+      RGB.color(64,0,0);
       if (WiFi.ready())
       {
-        RGB.color(0,255,0);
+        RGB.color(0,64,0);
         request.hostname = IPADDRESS;
         request.port = 80;
         request.path = URL;
